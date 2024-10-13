@@ -1,0 +1,4 @@
+df=spark.read.format("csv").option("header","true").option("inferSchema","true").load(file_path)
+df.show()
+printSchema(df)
+ndf=df.withcolumn("todaydate",timstamp().col("date"))

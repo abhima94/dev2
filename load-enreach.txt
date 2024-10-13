@@ -1,0 +1,147 @@
+import traceback
+import datetime
+from pyspark.sql.functions import expr, col, concat
+from delta.tables import DeltaTable
+
+# Custom library imports
+import utilsTrans
+import utilsIO
+from customException import *
+
+def process(conf, spark, audit, exception):
+    """
+    This function executes the load and enrich process by appending, overwriting,
+    or merging data into the target table, and also handles logging and auditing.
+    """
+    stage = conf.get('options.module') + 'load_enrich_process'
+    
+    try:
+        # Log and execute SQL statement
+        audit.info(spark, stage, "Executing SQL Statement: " + str(conf.get('sql')))
+        df = spark.sql(conf.get('sql'))  # Execute SQL from config
+        total_row_count = df.count()
+        audit.info(spark, stage, "Total Row count generated: " + str(total_row_count))
+
+        # Flag for initial load if rows exist
+        if total_row_count > 0:
+            initial_load_flag = True
+        
+        # Get input DataFrame columns and log them
+        df_cols = df.columns
+        audit.info(spark, stage, "Input Dataframe columns are: " + str(df_cols))
+        
+        # Add audit columns
+        df = utilsTrans.add_audit_columns(df)
+        
+        # Get configured target table path and log it
+        target_table_path = conf["target-path"] + conf["target-table"]
+        audit.info(spark, stage, "Configured target Path: " + str(target_table_path))
+        
+        # Check if the file exists (initial load or not) and log it
+        file_exist_flag = utilsIO.get_file_exists(spark, target_table_path)
+        audit.info(spark, stage, "file_exist_flag: " + str(file_exist_flag))
+        
+        # Logic to handle initial load or incremental updates would follow here...
+
+    except Exception as e:
+        # Handle any exceptions and log the error
+        audit.error(spark, stage, "Error in process: " + str(e))
+        traceback.print_exc()
+----------------------load data----------------------------------------------------------------------------------------------
+
+
+# Import necessary libraries
+from pyspark.sql import SparkSession
+
+# Define overwrite function
+def overwrite(conf, spark, stage, audit, df, target_table_path):
+    audit.info(spark, stage, "Performing Overwrite")
+    
+    if 'partition-by' in conf:
+        df.write.format(str(conf['target-format'])).mode("overwrite") \
+            .option("partitionBy", conf['partition-by']) \
+            .option("overwriteSchema", "True") \
+            .save(target_table_path)
+    else:
+        df.write.format(str(conf['target-format'])).mode("overwrite") \
+            .option("overwriteSchema", "True") \
+            .save(target_table_path)
+
+# Define replace_partition function
+def replace_partition(conf, spark, stage, audit, df, target_table_path, df_cols):
+    df = df.dropDuplicates(df_cols)
+    
+    audit.info(spark, stage, "Performing Replace Partition")
+    
+    partition_values = tuple(df.select(df[conf['partition-by']])
+                             .distinct()
+                             .collect())
+    
+    partition_str = str([x[0] for x in partition_values]).replace("[", "").replace("]", "")
+    
+    df.write.format(str(conf['target-format'])).option("mergeSchema", "True") \
+        .option("replaceWhere", f"{conf['partition-by']} in ({partition_str})") \
+        .mode("overwrite").save(target_table_path)
+
+# Define CDC with keys function
+def cdc_with_keys(conf, spark, stage, audit, df):
+    audit.info(spark, stage, "Dropping duplicates based on CDC keys")
+    df = df.dropDuplicates(conf['cdc-keys'] + conf['input-table-keys'])
+    
+    audit.info(spark, stage, f"Total rows left after removing duplicates: {df.count()}")
+    
+    for i in range(len(conf['input-table-keys'])):
+        key = conf['input-table-keys'][i]
+        
+        query = f"target.{key} = df.{key}"
+        
+        merge_keys = " AND ".join([f"target.{k} = df.{k}" for k in conf['input-table-keys']])
+        
+        rows_to_update = df.alias("df").join(target_table.alias("target"), merge_keys) \
+                            .where(quer
+-------------logic for both CDC without keys and an SCD2 merge operation------------------------------------
+
+# Import necessary libraries
+from pyspark.sql import functions as F
+
+# Define cdc_without_keys function
+def cdc_without_keys(conf, spark, stage, audit, df, target_table, df_cols):
+    # Function to perform CDC when no keys are provided
+    audit.info(spark, stage, 'Spark default duplicate dropping')
+    df = df.dropDuplicates(df_cols)
+    
+    audit.info(spark, stage, 'Total Row count after removing duplicates & null: ' + str(df.count()))
+    audit.info(spark, stage, 'Performing CDC on ' + str(df_cols))
+    
+    cdc_cols = df_cols
+    query = ""
+    
+    for i in range(len(cdc_cols)):
+        query += "updates." + cdc_cols[i] + " = target." + cdc_cols[i]
+        if i != len(cdc_cols) - 1:
+            query += " AND "
+    
+    merge_keys = conf['keys'].split(",")
+    
+    rows_to_update = df.alias("updates").join(target_table.toDF().alias("target"), F.expr(query)).where(merge_keys)
+    audit.info(spark, stage, "Number of rows that are updated: " + str(rows_to_update.count()))
+    
+    no_change_rows = df.alias("updates").join(target_table.toDF().alias("target"), df_cols).select("updates.*")
+    
+    rows_for_scd2 = df.alias("updates").join(no_change_rows.alias("target"), df_cols, how='leftAnti').select(df.columns)
+    
+    staged_updates = rows_to_update.selectExpr("updates.*", "NULL as mergeKey").union(rows_for_scd2.selectExpr("*", "NULL as mergeKey"))
+    
+    return staged_updates
+
+# Define merge_with_scd2 function
+def merge_with_scd2(conf, spark, stage, audit, staged_updates, target_table):
+    # SCD2 merge operation when SCD2 flag is True
+    audit.info(spark, stage, 'SCD2 Merge operation started')
+    
+    current_time = str(F.current_timestamp())
+    
+    # Custom merge logic can be added here
+    staged_updates = staged_updates.withColumn("mergeKey", F.concat(*[F.col(key) for key in conf['keys'].split(",")]))
+    
+    return staged_updates

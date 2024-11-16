@@ -1,0 +1,197 @@
+import os
+
+def format_multiline_strings(string_data):
+    """
+    Method to format multiline strings into a single line.
+    """
+    string_list = [elem.strip() for elem in string_data.split('\n')]
+    return ''.join(string_list)
+
+def write_file(target_dir, file_name, file_content):
+    """
+    Method for writing generated script in output location.
+    """
+    try:
+        os.makedirs(target_dir, exist_ok=True)
+        with open(f"{target_dir}/{file_name}", "w") as file_handler:
+            file_handler.write(file_content)
+    except Exception as e:
+        print(f"Error writing file: {e}")
+
+def generate_ddl_config_from_lookup(ddl_config, synapse_table_properties_df, synapse_column_mapping_df):
+    """
+    Config which would be used for DDL generation.
+    """
+    ddl_config.update({
+        'table_info': 'to be completed',  # Additional details need to be added based on the DataFrame processing
+        'access_authn_id': 'nvarchar(30)',
+        'version_no': 'bigint',
+        'secrty_view_cd': 'bigint',
+        'auto_regstrn_in': 'char(1)',
+        'authnt_type_cd': 'bigint',
+        'access_class_id': 'bigint'
+    })
+    return ddl_config
+
+# Example usage of the functions:
+# Assuming you have dataframes and other necessary inputs ready for use.
+sample_string = "Hello\nWorld\nThis is a test string."
+formatted_string = format_multiline_strings(sample_string)
+print("Formatted String:", formatted_string)
+
+# To use write_file, provide the directory, file name, and content you want to write.
+write_file('/path/to/directory', 'example.txt', formatted_string)
+
+# For generate_ddl_config_from_lookup, provide the initial config and dataframes.
+# This is just an example call and will not work without actual DataFrames.
+# ddl_config = generate_ddl_config_from_lookup({}, synapse_table_properties_df, synapse_column_mapping_df)
+
+
+-------------------------------------------------next
+
+import os
+
+def generate_and_write_ddl(table_info_dict, table_name_dict, file_sequence, additional_audit_columns, ddl_config):
+    """
+    Generate DDL for a table based on the given configuration and write to a file.
+    """
+    # Extract table and schema names from the configuration dictionaries
+    schema = ddl_config.get('ddl_table_schema')
+    synapse_table_name = table_name_dict.get('table_base_table_stage')
+    synapse_stage_name = table_name_dict.get('table_stage_name')
+    distribution_base = table_info_dict.get('table_properties_info').get('distribution_base')
+    distribution_stage = table_info_dict.get('table_properties_info').get('distribution_stage')
+
+    # Determine the distribution clause based on the distribution strategy
+    if distribution_stage == 'HASH':
+        distribution_clause = f"DISTRIBUTED BY HASH({distribution_base})"
+    else:
+        distribution_clause = "DISTRIBUTED ROUND ROBIN"
+
+    # Combine additional audit columns into a comma-separated list
+    additional_audit_columns_list = ", ".join(additional_audit_columns)
+
+    # Determine the partition clause based on table partitioning info
+    if table_info_dict.get('table_properties_info').get('partition'):
+        partition_clause = f"PARTITION BY RANGE({table_info_dict.get('table_properties_info').get('partition')})"
+    else:
+        partition_clause = ""
+
+    # SQL statement to create table
+    ddl_statement = f"""
+    CREATE TABLE {schema}.{synapse_table_name} (
+        {additional_audit_columns_list}
+    )
+    {distribution_clause}
+    {partition_clause};
+    """
+
+    # Write the DDL statement to a file
+    file_name = f"{schema}_{synapse_table_name}_{file_sequence}.sql"
+    try:
+        with open(file_name, 'w') as file:
+            file.write(ddl_statement)
+    except IOError as e:
+        print(f"Error writing to file {file_name}: {e}")
+
+# Example usage of the function
+table_info = {
+    'table_properties_info': {
+        'distribution_base': 'column1',
+        'distribution_stage': 'HASH',
+        'partition': 'column2'
+    }
+}
+
+table_names = {
+    'table_base_table_stage': 'base_table',
+    'table_stage_name': 'stage_table'
+}
+
+additional_columns = ['created_at TIMESTAMP', 'updated_at TIMESTAMP']
+config = {'ddl_table_schema': 'public'}
+
+generate_and_write_ddl(table_info, table_names, '001', additional_columns, config)
+
+
+-----------------------------------------------next
+
+import pandas as pd
+
+def process_data_frame(synapse_table_properties_df, ddl_config):
+    # Rename DataFrame columns based on ddl_config mappings for easier handling
+    for original, new in [('table_name', 'table_name'), ('partition_column_name', 'partition1'), ('distribution_column_name', 'distributio')]:
+        synapse_table_properties_df = synapse_table_properties_df.withColumnRenamed(ddl_config.get(original), ddl_config.get(new))
+
+    # Extract and store table level details in a dictionary for each table entry
+    all_table_column_dict = {row['table_name']: {
+        'partition': row['partition1'], 'distribution': row['distributio'], 'index_stage': ddl_config.get('stage_table_index').upper(),
+        'index_base': ddl_config.get('base_table_index').upper()
+    } for row in synapse_table_properties_df.collect()}
+
+    return all_table_column_dict
+
+# Example usage
+ddl_config = {
+    'table_name': 'NewTableName',
+    'partition_column_name': 'PartitionColumn',
+    'distribution_column_name': 'DistributionColumn',
+    'stage_table_index': 'ST_Index',
+    'base_table_index': 'Base_Index'
+}
+synapse_table_properties_df = pd.DataFrame([
+    {'table_name': 'Table1', 'partition1': 'Partition1', 'distributio': 'Distributio1'}
+])  # This DataFrame needs to be replaced with the actual Spark DataFrame in your environment
+
+processed_data = process_data_frame(synapse_table_properties_df, ddl_config)
+print(processed_data)
+--------------------------------------------------next
+
+from pyspark.sql.functions import concat, col, lit, collect_list
+from pyspark.sql import SparkSession
+
+# Initialize Spark session
+spark = SparkSession.builder.appName("Synapse DDL Processing").getOrCreate()
+
+# Assuming ddl_config and synapse_column_mapping_df are predefined and loaded appropriately
+
+def process_column_mappings(synapse_column_mapping_df, ddl_config):
+    # Construct intermediate DataFrame with specific column selections and renamings
+    synapse_interim_df = synapse_column_mapping_df.select(
+        col(ddl_config['synapse.column.datatype.mapping.table_name']).alias('table_name'),
+        concat(lit(''), col(ddl_config['synapse.column.datatype.mapping.column_name']), lit('')).alias('column_name'),
+        col(ddl_config['synapse.column.datatype.mapping.attribute.column_name']).alias('column_dtype')
+    ).withColumnRenamed(ddl_config['synapse.column.datatype.mapping.attribute.datatype.name'], 'column_dtype')
+
+    # Aggregate data by table_name and collect lists of column_dtype and column_name
+    synapse_dtype_df = synapse_interim_df.groupBy('table_name').agg(
+        collect_list('column_dtype').alias('synapse_column_set'),
+        collect_list('column_name').alias('synapse_columns')
+    ).withColumnRenamed(ddl_config['synapse.column.datatype.mapping.attribute.table_name'], 'synapse_table')
+
+    # Collect data into dictionary with table as key
+    all_table_column_dict = {row['synapse_table']: {'table_column_info': row['synapse_column_set']}
+                             for row in synapse_dtype_df.collect()}
+
+    return all_table_column_dict
+
+# Example usage
+ddl_config = {
+    'synapse.column.datatype.mapping.table_name': 'table_name',
+    'synapse.column.datatype.mapping.column_name': 'column_name',
+    'synapse.column.datatype.mapping.attribute.column_name': 'column_dtype',
+    'synapse.column.datatype.mapping.attribute.datatype.name': 'data_type_name',
+    'synapse.column.datatype.mapping.attribute.table_name': 'physical_table_name'
+}
+
+# Example DataFrame setup (synapse_column_mapping_df should be a Spark DataFrame loaded with your data)
+synapse_column_mapping_df = spark.createDataFrame([
+    ('Table1', 'ColumnName1', 'DataType1'),
+    ('Table1', 'ColumnName2', 'DataType2')
+], ['table_name', 'column_name', 'column_dtype'])
+
+# Process the DataFrame
+all_table_column_dict = process_column_mappings(synapse_column_mapping_df, ddl_config)
+print(all_table_column_dict)
+
+
